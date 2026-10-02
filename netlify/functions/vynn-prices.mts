@@ -1,91 +1,73 @@
-import type { Config, Handler } from "@netlify/functions";
+import type { Config } from "@netlify/functions";
 
-export default (async (request) => {
+const json = (body: unknown, status = 200, extraHeaders: Record<string, string> = {}) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...extraHeaders },
+  });
+
+export default async (request: Request) => {
   try {
-    if (request.method !== "GET" && request.method !== "POST") {
-      return new Response(
-        JSON.stringify({ error: "Method not allowed" }),
-        {
-          status: 405,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
+    if (request.method !== "GET") {
+      return json({ error: "Method not allowed" }, 405);
     }
 
     const apiKey = Netlify.env.get("VYNN_API_KEY");
 
     if (!apiKey) {
-      return new Response(
-        JSON.stringify({ error: "VYNN_API_KEY is not configured" }),
-        {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
+      return json({ error: "VYNN_API_KEY is not configured" }, 500);
     }
 
     const url = new URL(request.url);
 
-    const city =
-      url.searchParams.get("city") || "Ottawa";
+    // Texte cherché (accepte "q" ou "query"), par défaut "milk"
+    const q = (url.searchParams.get("q") || url.searchParams.get("query") || "milk").trim();
 
-    const query =
-      url.searchParams.get("query") || "grocery prices";
+    // Province sur 2 lettres (ON, QC, BC, AB...), par défaut ON
+    const province = (url.searchParams.get("province") || "ON").toUpperCase();
 
-    /*
-      IMPORTANT:
-      Remplace cette URL et le format du body
-      par ceux indiqués dans la documentation Vynn.
-    */
+    const limit = url.searchParams.get("limit") || "20";
 
-    const response = await fetch("VYNN_API_ENDPOINT", {
-      method: "POST",
+    const apiUrl = new URL("https://vynn.ai/v1/products/search");
+    apiUrl.searchParams.set("q", q);
+    apiUrl.searchParams.set("province", province);
+    apiUrl.searchParams.set("limit", limit);
+
+    const response = await fetch(apiUrl.toString(), {
+      method: "GET",
       headers: {
-        "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
       },
-      body: JSON.stringify({
-        city,
-        query,
-      }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
 
-      return new Response(
-        JSON.stringify({
-          error: "Vynn API request failed",
-          details: errorText,
-        }),
+      return json(
         {
+          error: "Vynn API request failed",
           status: response.status,
-          headers: { "Content-Type": "application/json" },
-        }
+          details: errorText,
+        },
+        response.status
       );
     }
 
     const data = await response.json();
 
-    return new Response(JSON.stringify(data), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "public, max-age=300",
-      },
-    });
+    // "private" : la doc Vynn interdit le cache partagé des réponses authentifiées
+    return json(data, 200, { "Cache-Control": "private, max-age=300" });
   } catch (error) {
-    return new Response(
-      JSON.stringify({
-        error: "Internal server error",
-      }),
+    return json(
       {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
+        error: "Internal server error",
+        details: String(error),
+      },
+      500
     );
   }
-}) satisfies Handler;
+};
 
 export const config: Config = {
   path: "/netlify/functions/vynn-prices",
